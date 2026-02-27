@@ -52,11 +52,11 @@
   - Initialize with `uv init` (already done)
   - Add core dependencies:
     - `torch` (with CUDA 12.x support for RTX 3060)
+    - `tokenizers` (HuggingFace, fast Rust-backed BPE training & inference)
     - `transformers` (only for tokenizer reference / comparison, not for the model)
     - `datasets` (HuggingFace, for downloading benchmark data)
     - `wandb`
     - `jupyter`, `ipykernel`
-    - `tiktoken` or custom BPE implementation
     - `pyyaml` (config loading)
     - `tqdm`
     - `scikit-learn` (for eval metrics like F1, Matthews corr)
@@ -92,11 +92,20 @@
   - Visualize merge operations and vocabulary growth
 
 - [ ] **1.2 — Decide on tokenizer strategy**
-  - **Option A:** Train your own BPE tokenizer from scratch on BooksCorpus (~40k merges)
-  - **Option B:** Use the OpenAI GPT-1 tokenizer (available via `transformers` library's `OpenAIGPTTokenizer`)
+  - **Option A (Recommended): Train a custom BPE using HuggingFace `tokenizers`** library
+    - Use the `tokenizers.Tokenizer` + `tokenizers.models.BPE` API (or the legacy `ByteLevelBPETokenizer`)
+    - Train on BooksCorpus (or your chosen pre-training corpus) with ~40,000 merges
+    - Steps:
+      1. Prepare a text iterator or list of text files from the corpus
+      2. Configure pre-tokenizer: `ByteLevel` (GPT-style) or `Whitespace` + `Punctuation`
+      3. Configure trainer: `BpeTrainer(vocab_size=40000, special_tokens=["<s>", "</s>", "<pad>", "<cls>", "<unk>"])`
+      4. Train: `tokenizer.train_from_iterator(corpus_iterator)` or `tokenizer.train(files)`
+      5. Save: `tokenizer.save("tokenizer.json")` — single file, fast to load
+    - Advantages: extremely fast (Rust backend), battle-tested, supports all BPE variants, easy serialization
+  - **Option B:** Use the OpenAI GPT-1 tokenizer (available via `transformers` library's `OpenAIGPTTokenizer`) — for exact reproduction / comparison baseline
   - **Option C:** Use `tiktoken` (OpenAI's fast BPE implementation) — note: this uses a different encoding than GPT-1
-  - **Recommendation for faithful reproduction:** Use Option B for exact reproduction, but also implement Option A in the notebook for learning purposes
-  - Vocabulary should include special tokens: `<s>` (start), `</s>` (end/separator), `<pad>`, `<cls>` (for fine-tuning classification)
+  - **Recommendation:** Use Option A to train your own tokenizer for the learning experience and flexibility. Keep Option B on hand to compare tokenization quality against the original.
+  - Vocabulary should include special tokens: `<s>` (start), `</s>` (end/separator), `<pad>`, `<cls>` (for fine-tuning classification), `<unk>` (unknown)
   - The original paper uses `ftfy` for text cleaning and `spaCy` for tokenization before BPE
 
 - [ ] **1.3 — Implement tokenizer wrapper** *(file: `gpt1/tokenizer.py`)*
