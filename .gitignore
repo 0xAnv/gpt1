@@ -11,3 +11,9 @@ wheels/
 
 # PDF files (Windows)
 GPT1.pdf:Zone.Identifier
+
+data/
+checkpoints/
+wandb/
+.env
+.env.local
