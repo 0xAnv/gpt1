@@ -62,7 +62,7 @@
     - `scikit-learn` (for eval metrics like F1, Matthews corr)
     - `scipy` (for Spearman/Pearson on STS-B)
 
-- [ ] **0.3 — Weights & Biases integration**
+- [x] **0.3 — Weights & Biases integration**
   - `wandb login` and create project `gpt1-from-scratch`
   - Set up a `wandb.init()` wrapper in `gpt1/utils.py` that logs:
     - All hyperparameters (config dict)
