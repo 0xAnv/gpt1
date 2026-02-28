@@ -1,0 +1,48 @@
+# ============================================================================
+# GPT-1 Fine-Tuning Config
+# ============================================================================
+# All values here override ExperimentConfig defaults.
+# Only specify values you want to change from the dataclass defaults.
+#
+# Paper reference: Section 3.3 — Task-specific input transformations
+# ============================================================================
+
+# ── Task ─────────────────────────────────────────────────────────────────
+task_name: "sst2"             # cola | sst2 | mrpc | qqp | stsb | mnli | qnli | rte | snli | scitail | race | storycloze
+
+# ── Fine-tuning hyperparameters (paper Section 2.1) ──────────────────────
+ft_lr: 6.25e-5                # fine-tuning learning rate
+ft_epochs: 3                  # number of fine-tuning epochs
+ft_batch_size: 32
+ft_warmup_frac: 0.002         # warmup over 0.2% of total training steps
+ft_lr_schedule: "linear"      # "linear" | "cosine"
+lambda_aux: 0.5               # weight for auxiliary LM objective (L₃ = L₂ + λ·L₁)
+label_smoothing: 0.0          # label smoothing (paper doesn't specify, default off)
+
+# ── Model (inherit from pre-training, but listed for clarity) ────────────
+n_layers: 12
+n_heads: 12
+d_model: 768
+d_ff: 3072
+vocab_size: 40000
+max_seq_len: 512
+dropout: 0.1
+
+# ── Adam optimizer ────────────────────────────────────────────────────────
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_eps: 1.0e-8
+
+# ── Precision ────────────────────────────────────────────────────────────
+use_amp: true
+
+# ── Paths ────────────────────────────────────────────────────────────────
+data_dir: "data/"
+checkpoint_dir: "checkpoints/"
+resume_from: "checkpoints/pretrain-latest.pt"    # start from pre-trained weights
+
+# ── Logging ──────────────────────────────────────────────────────────────
+wandb_project: "GPT1"
+log_interval: 10
+eval_interval: 200
+save_interval: 500

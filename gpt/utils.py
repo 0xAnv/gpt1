@@ -9,12 +9,15 @@ Features (all via wandb):
 """
 
 import math
+import sys
 import time
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict, fields
+from pathlib import Path
 from typing import Any
 
 import torch
 import wandb
+import yaml
 
 
 # ====================================================================
@@ -22,37 +25,181 @@ import wandb
 # ====================================================================
 @dataclass
 class ExperimentConfig:
-    """All hyperparameters from the GPT-1 paper, grouped by stage."""
+    """All hyperparameters from the GPT-1 paper, grouped by stage.
 
-    # ── Model architecture ──────────────────────────────────────────
+    Defaults match the paper exactly. Override via YAML or CLI::
+
+        # YAML only
+        cfg = load_config("configs/pretrain.yaml")
+
+        # YAML + CLI overrides  (e.g. --lr 1e-4 --batch_size 32)
+        cfg = load_config("configs/pretrain.yaml", cli_args=sys.argv[1:])
+    """
+
+    # ── Model architecture (paper Table 1) ──────────────────────────
     n_layers: int = 12
     n_heads: int = 12
     d_model: int = 768
-    d_ff: int = 3072
+    d_ff: int = 3072                    # 4 × d_model
     vocab_size: int = 40_000
     max_seq_len: int = 512
     dropout: float = 0.1
 
     # ── Stage 1: unsupervised pre-training ──────────────────────────
     batch_size: int = 64
-    micro_batch_size: int = 8
-    lr: float = 2.5e-4
-    warmup_steps: int = 2_000
-    total_steps: int = 800_000
-    weight_decay: float = 0.01
-    grad_clip: float = 1.0
+    micro_batch_size: int = 8           # actual GPU batch; accumulate → effective batch_size
+    lr: float = 2.5e-4                  # peak learning rate
+    warmup_steps: int = 2_000           # linear warmup from 0 → lr
+    total_steps: int = 800_000          # ~100 epochs on BooksCorpus
+    weight_decay: float = 0.01          # L2 on all params except biases & LayerNorm
+    grad_clip: float = 1.0              # global gradient-norm clipping
+    lr_schedule: str = "cosine"         # "cosine" | "linear"
+
+    # ── Adam optimizer ──────────────────────────────────────────────
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.999
+    adam_eps: float = 1e-8
 
     # ── Stage 2: supervised fine-tuning ─────────────────────────────
     task_name: str = ""
     ft_lr: float = 6.25e-5
     ft_epochs: int = 3
     ft_batch_size: int = 32
-    lambda_aux: float = 0.5
+    ft_warmup_frac: float = 0.002       # warmup over 0.2% of training steps
+    ft_lr_schedule: str = "linear"      # "linear" | "cosine"
+    lambda_aux: float = 0.5             # L₃ = L₂ + λ·L₁
+    label_smoothing: float = 0.0        # paper doesn't specify; default off
+
+    # ── Precision & performance ─────────────────────────────────────
+    use_amp: bool = True                # mixed-precision (fp16)
+    grad_checkpoint: bool = False       # gradient checkpointing
 
     # ── Infrastructure ──────────────────────────────────────────────
     wandb_project: str = "GPT1"
     checkpoint_dir: str = "checkpoints/"
     data_dir: str = "data/"
+    resume_from: str = ""               # path to checkpoint (empty = fresh start)
+
+    # ── Logging intervals ───────────────────────────────────────────
+    log_interval: int = 50              # log metrics every N steps
+    eval_interval: int = 1_000          # run validation every N steps
+    save_interval: int = 5_000          # save checkpoint every N steps
+
+    # ── Derived (computed, not set in YAML) ─────────────────────────
+    @property
+    def grad_accum_steps(self) -> int:
+        """Number of micro-batches to accumulate for effective batch_size."""
+        assert self.batch_size % self.micro_batch_size == 0, (
+            f"batch_size ({self.batch_size}) must be divisible by "
+            f"micro_batch_size ({self.micro_batch_size})"
+        )
+        return self.batch_size // self.micro_batch_size
+
+
+# ====================================================================
+# Config loading — YAML files + CLI overrides
+# ====================================================================
+def load_config(
+    yaml_path: str | Path | None = None,
+    cli_args: list[str] | None = None,
+    **overrides: Any,
+) -> ExperimentConfig:
+    """Build an ExperimentConfig with layered overrides.
+
+    Priority (highest wins):  CLI flags  >  **overrides  >  YAML  >  defaults
+
+    Args:
+        yaml_path: Path to a YAML config file. Fields in the file override
+            dataclass defaults.
+        cli_args: Raw CLI args (e.g. ``sys.argv[1:]``). Supports
+            ``--field_name value`` syntax for any ExperimentConfig field.
+        **overrides: Direct keyword overrides (handy in notebooks).
+
+    Returns:
+        A fully-populated ExperimentConfig.
+
+    Examples::
+
+        # From code / notebook
+        cfg = load_config("configs/pretrain.yaml", lr=1e-4)
+
+        # From a training script's CLI
+        cfg = load_config(sys.argv[1], cli_args=sys.argv[2:])
+    """
+    valid_fields = {f.name: f for f in fields(ExperimentConfig)}
+    merged: dict[str, Any] = {}
+
+    # Layer 1: YAML file
+    if yaml_path is not None:
+        path = Path(yaml_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Config file not found: {path}")
+        with open(path) as f:
+            yaml_data = yaml.safe_load(f) or {}
+        unknown = set(yaml_data) - set(valid_fields)
+        if unknown:
+            raise ValueError(
+                f"Unknown config fields in {path}: {unknown}. "
+                f"Valid fields: {sorted(valid_fields)}"
+            )
+        merged.update(yaml_data)
+
+    # Layer 2: keyword overrides
+    unknown = set(overrides) - set(valid_fields)
+    if unknown:
+        raise ValueError(f"Unknown config overrides: {unknown}")
+    merged.update(overrides)
+
+    # Layer 3: CLI args  (--field value)
+    if cli_args:
+        merged.update(_parse_cli_overrides(cli_args, valid_fields))
+
+    # Cast values to the correct types (YAML may give int where we need float, etc.)
+    for key, value in merged.items():
+        expected_type = valid_fields[key].type
+        merged[key] = _cast(value, expected_type)
+
+    return ExperimentConfig(**merged)
+
+
+def _parse_cli_overrides(
+    args: list[str], valid_fields: dict,
+) -> dict[str, Any]:
+    """Parse ``--field_name value`` pairs from a CLI arg list."""
+    overrides: dict[str, Any] = {}
+    i = 0
+    while i < len(args):
+        token = args[i]
+        if token.startswith("--"):
+            key = token.lstrip("-")
+            if key not in valid_fields:
+                raise ValueError(
+                    f"Unknown CLI flag: {token}. "
+                    f"Valid flags: {sorted(valid_fields)}"
+                )
+            if i + 1 >= len(args):
+                raise ValueError(f"CLI flag {token} requires a value")
+            overrides[key] = args[i + 1]
+            i += 2
+        else:
+            i += 1  # skip positional args (e.g. config path)
+    return overrides
+
+
+def _cast(value: Any, type_hint: str) -> Any:
+    """Cast a raw value (from YAML or CLI) to the expected Python type."""
+    # type_hint is a string like 'int', 'float', 'str', 'bool'
+    if type_hint == "bool" or type_hint is bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.lower() in ("true", "1", "yes")
+        return bool(value)
+    if type_hint == "int" or type_hint is int:
+        return int(value)
+    if type_hint == "float" or type_hint is float:
+        return float(value)
+    return str(value)
 
 
 # ====================================================================

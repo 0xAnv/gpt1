@@ -9,7 +9,7 @@
 
 ## Phase 0 — Project Scaffolding & Tooling
 
-- [ ] **0.1 — Project structure**
+- [x] **0.1 — Project structure**
   - Set up a clean directory layout:
     ```
     gpt1/
@@ -48,7 +48,7 @@
     ```
   - Create `.gitignore` entries for `data/`, `checkpoints/`, `.venv/`, `wandb/`, `__pycache__/`
 
-- [ ] **0.2 — Dependency management with `uv`**
+- [x] **0.2 — Dependency management with `uv`**
   - Initialize with `uv init` (already done)
   - Add core dependencies:
     - `torch` (with CUDA 12.x support for RTX 3060)
@@ -72,7 +72,7 @@
     - GPU memory usage, throughput (tokens/sec)
   - Plan: Every experiment gets a descriptive `wandb` run name (e.g., `pretrain-bookscorpus-v1`, `finetune-mnli-v1`)
 
-- [ ] **0.4 — Config system**
+- [x] **0.4 — Config system**
   - Design a config dataclass or YAML schema covering:
     - Model hyperparams (n_layers, n_heads, d_model, d_ff, vocab_size, max_seq_len, dropout)
     - Training hyperparams (batch_size, lr, warmup_steps, total_steps, weight_decay, grad_clip)
