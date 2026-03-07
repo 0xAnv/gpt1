@@ -18,3 +18,4 @@ wandb/
 .env
 .env.local
 # notes/
+.pytest_cache
