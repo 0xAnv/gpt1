@@ -220,6 +220,38 @@ class GPT1(nn.Module):
             for _ in range(n_layers)
         ])
 
+        # Applying base initialization to all modules 
+        self.apply(self._init_weights)
+
+        # Residual Scaling to output projections
+        for dec_block in self.blocks:
+            torch.nn.init.normal_(block.attn.W_o.weight, mean=0.0, std=0.02 / (2*n_layers) ** 0.5) 
+            torch.nn.init.normal_(block.ffn.fc2.weight, mean=0.0, std=0.02 / (2*n_layers) ** 0.5)
+            
+
+    def _init_weights(self, module:nn.Module) -> None: 
+        """
+        Initialize weights following GPT 1 Paper specs
+
+        - All Weights: N(0, 0.02)
+        - All Bias: 0 
+        - Residual Projections: (W_o in attention, fc2 in FFN)
+                                additionally scaled by 1/sqrt(2* n_layers) , 
+                                to counteract the effect of multiple residual connections 
+        """
+
+        if isinstance(module, nn.Linear): 
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias) 
+        
+        elif isinstance(module, nn.Embedding): 
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+        
+        elif isinstance(module, nn.LayerNorm): 
+            torch.nn.init.ones_(module.weight)  # gamma = 1
+            torch.nn.init.zeros_(module.bias)   # beta = 0
+
     def forward(self, x:Tensor) -> Tensor:
         """
         Forward pass of the full GPT 1 Model. 

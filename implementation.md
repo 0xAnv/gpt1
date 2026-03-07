@@ -203,7 +203,7 @@
     - **Total: ~116.3M** ✓
   - Write a `count_parameters()` utility function
 
-- [ ] **2.4.5 — Weight initialization**
+- [x] **2.4.5 — Weight initialization**
   - The paper references a modified initialization:
     - Weights initialized from `N(0, 0.02)`
     - Biases initialized to 0
