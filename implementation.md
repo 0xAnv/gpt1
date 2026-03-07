@@ -91,7 +91,7 @@
   - Understand the difference between character-level, word-level, subword (BPE) tokenization
   - Visualize merge operations and vocabulary growth
 
-- [ ] **1.2 — Decide on tokenizer strategy**
+- [x] **1.2 — Decide on tokenizer strategy**
   - **Option A (Recommended): Train a custom BPE using HuggingFace `tokenizers`** library
     - Use the `tokenizers.Tokenizer` + `tokenizers.models.BPE` API (or the legacy `ByteLevelBPETokenizer`)
     - Train on BooksCorpus (or your chosen pre-training corpus) with ~40,000 merges
@@ -108,7 +108,7 @@
   - Vocabulary should include special tokens: `<s>` (start), `</s>` (end/separator), `<pad>`, `<cls>` (for fine-tuning classification), `<unk>` (unknown)
   - The original paper uses `ftfy` for text cleaning and `spaCy` for tokenization before BPE
 
-- [ ] **1.3 — Implement tokenizer wrapper** *(file: `gpt1/tokenizer.py`)*
+- [x] **1.3 — Implement tokenizer wrapper** *(file: `gpt1/tokenizer.py`)*
   - `encode(text) → List[int]`
   - `decode(token_ids) → str`
   - `vocab_size` property
