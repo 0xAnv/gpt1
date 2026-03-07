@@ -95,7 +95,6 @@ class MultiHeadAttention(nn.Module):
 
         return output
 
-
 class PositionWiseFFN(nn.Module): 
     """
     Position wise feed forward network. 
@@ -128,6 +127,58 @@ class PositionWiseFFN(nn.Module):
         x = self.fc2(x)       # (batch, seq_len, 3072) -> (batch, seq_len, 768)
         x = self.dropout(x)   # regularization before residual add (done externally)
         return x
+
+class TransformerBlock(nn.Module): 
+    """
+    A single transformer decoder block (post norm variant as in GPT 1) 
+    
+    Applies masked multi-head attention followed by postition wise feed forward network. 
+    Each with residual connection and layernorm.
+
+    Architecture: 
+        h = LayerNorm(x + Multiheadattention(x)) 
+        output = LayerNorm(h + PositionWiseFFN(h))
+
+    Args: 
+        d_model: Dimensionality of model's hidden state 
+        n_heads: number of attention heads 
+        d_ff : Inner dimensionality of feed forward network 
+        dropout: Dropout probability
+    """
+
+    def __init__(
+        self, 
+        d_model:int = 768, 
+        n_heads:int = 12, 
+        d_ff:int = 3072, 
+        dropout:float = 0.1
+    ) -> None: 
+
+        super().__init__()
+
+        # sub layers 
+        self.attn = MultiHeadAttention(d_model=d_model, n_heads=n_heads, dropout=dropout)
+        self.ffn = PositionWiseFFN(d_model=d_model, d_ff=d_ff, dropout=dropout) 
+
+        # Layer Norms (one per sub-layer) 
+        self.ln1 = nn.LayerNorm(d_model)
+        self.ln2 = nn.LayerNorm(d_model)
+
+    def forward(self, x:Tensor) -> Tensor : 
+        """
+        Forward pass through on transformer decoder block. 
+        Args: 
+            x: Input tensor of shape (batch, seq_len, d_model)
+        Returns:
+            Output Tensor of shape (batch, seq_len, d_model) 
+        """
+        # sub layer 1: Attention + residual + norm (post-norm) 
+        x = self.ln1(x + self.attn(x))
+
+        # sub layer 2: FFN + residual + norm (post-norm)
+        x = self.ln2(x + self.ffn(x))
+
+        return x;
 
 # checking attention 
 
@@ -167,8 +218,27 @@ def check_ffn() -> None:
     assert torch.allclose(out1[:, 1:, :], out2[:, 1:, :]), "FFN is not position-wise!"
     print("Position-wise independence verified!")
 
+def check_block() -> None:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    block = TransformerBlock(d_model=768, n_heads=12, d_ff=3072, dropout=0.1).to(device)
+    x = torch.randn(2, 10, 768, device=device)
+    out = block(x)
+    print(f"Block Input shape:  {x.shape}")    # (2, 10, 768)
+    print(f"Block Output shape: {out.shape}")   # (2, 10, 768)
+    print(f"Block Parameters:   {sum(p.numel() for p in block.parameters()):,}")  # 7,087,872
+
+    # Verify causal property is preserved through the block
+    block.eval()
+    x2 = x.clone()
+    x2[:, 5:, :] = torch.randn(2, 5, 768, device=device)
+    out1 = block(x)
+    out2 = block(x2)
+    assert torch.allclose(out1[:, :5, :], out2[:, :5, :]), "Block causality broken!"
+    print("Block causality verified!")
+
 
 if __name__ == "__main__":
     check_mha()
     check_ffn()
+    check_block()
     torch.cuda.empty_cache()
