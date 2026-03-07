@@ -133,7 +133,7 @@
     - Compare masked vs unmasked attention
     - Show how head splitting works dimensionally
 
-- [ ] **2.1.2 — Production attention module** *(file: `gpt1/model.py`)*
+- [x] **2.1.2 — Production attention module** *(file: `gpt1/model.py`)*
   - `MultiHeadAttention(d_model=768, n_heads=12, dropout=0.1)`
   - Causal masking built-in
   - Residual connection handled externally (in the block)
