@@ -146,7 +146,7 @@
   - Build FFN: `Linear(768, 3072) → GELU → Linear(3072, 768)`
   - Understand why FFN inner dim is 4× the model dim
 
-- [ ] **2.2.2 — Production FFN module** *(file: `gpt1/model.py`)*
+- [x] **2.2.2 — Production FFN module** *(file: `gpt1/model.py`)*
   - `PositionwiseFFN(d_model=768, d_ff=3072, dropout=0.1)`
 
 ### 2.3 — Transformer Decoder Block

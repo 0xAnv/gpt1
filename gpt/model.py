@@ -95,6 +95,40 @@ class MultiHeadAttention(nn.Module):
 
         return output
 
+
+class PositionWiseFFN(nn.Module): 
+    """
+    Position wise feed forward network. 
+    Applies two linear transformations with GELU activation in between.
+    FFN(x) = Linear_2(GELU(Linear_1(x)))
+
+    Args:
+        d_model: Dimensionality of model 
+        d_ff: Dimensionality of inner (hideen) layer. 
+    """
+
+    def __init__(self, d_model:int = 768, d_ff:int = 3072, dropout:float = 0.1) -> None:
+        super().__init__()
+
+        self.fc1 = nn.Linear(d_model, d_ff) # expand : 768 -> 3072
+        self.fc2 = nn.Linear(d_ff, d_model) # compress : 3072 -> 768 
+        self.gelu = nn.GELU()
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x:Tensor) -> Tensor:
+        """
+        Forward Pass
+        Args: 
+            x: Input tensor of shape (batch, seq_len, d_model)
+        Returns:
+            Ouput tensor of shape (batch, seq_len, d_model).
+        """
+        x = self.fc1(x)  # (batch, seq_len, 768) -> (batch, seq_len, 3072)
+        x = self.gelu(x)      # nonlinear activation, same shape
+        x = self.fc2(x)       # (batch, seq_len, 3072) -> (batch, seq_len, 768)
+        x = self.dropout(x)   # regularization before residual add (done externally)
+        return x
+
 # checking attention 
 
 def check_mha() -> None:
@@ -115,5 +149,26 @@ def check_mha() -> None:
     assert torch.allclose(out1[:, :5, :], out2[:, :5, :]), "Causal mask broken!"
     print("Causal mask verified!")
 
+def check_ffn() -> None:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ffn = PositionWiseFFN(d_model=768, d_ff=3072, dropout=0.1).to(device)
+    x = torch.randn(2, 10, 768, device=device)
+    out = ffn(x)
+    print(f"FFN Input shape:  {x.shape}")    # (2, 10, 768)
+    print(f"FFN Output shape: {out.shape}")   # (2, 10, 768)
+    print(f"FFN Parameters:   {sum(p.numel() for p in ffn.parameters()):,}")  # 4,722,432
+
+    # Verify position-wise independence: changing one position shouldn't affect others
+    ffn.eval()
+    x2 = x.clone()
+    x2[:, 0, :] = torch.randn(768, device=device)  # change only position 0
+    out1 = ffn(x)
+    out2 = ffn(x2)
+    assert torch.allclose(out1[:, 1:, :], out2[:, 1:, :]), "FFN is not position-wise!"
+    print("Position-wise independence verified!")
+
+
 if __name__ == "__main__":
     check_mha()
+    check_ffn()
+    torch.cuda.empty_cache()
