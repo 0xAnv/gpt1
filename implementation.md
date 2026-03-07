@@ -162,7 +162,7 @@
   - Verify parameter count for a single block
   - Experiment: Apply dropout to attention weights and FFN output
 
-- [ ] **2.3.2 — Production decoder block** *(file: `gpt1/model.py`)*
+- [x] **2.3.2 — Production decoder block** *(file: `gpt1/model.py`)*
   - `TransformerBlock(d_model=768, n_heads=12, d_ff=3072, dropout=0.1)`
   - Includes: masked multi-head self-attention → add & norm → FFN → add & norm
 
@@ -176,12 +176,12 @@
   - Apply **dropout** to the combined embedding
   - Verify: positions are just `[0, 1, 2, ..., seq_len-1]`
 
-- [ ] **2.4.2 — Language model head**
+- [x] **2.4.2 — Language model head**
   - **Weight tying:** The output projection (LM head) shares weights with the token embedding matrix
   - `logits = hidden_state @ token_embed.weight.T` (no bias)
   - This is a key detail from the paper — reduces parameter count
 
-- [ ] **2.4.3 — Assemble the full model** *(file: `gpt1/model.py`)*
+- [x] **2.4.3 — Assemble the full model** *(file: `gpt1/model.py`)*
   - `GPT1(vocab_size, max_seq_len=512, n_layers=12, d_model=768, n_heads=12, d_ff=3072, dropout=0.1)`
   - Forward pass:
     ```
@@ -192,7 +192,7 @@
     ```
   - Outputs: `logits` of shape `(batch, seq_len, vocab_size)`
 
-- [ ] **2.4.4 — Parameter count verification**
+- [x] **2.4.4 — Parameter count verification**
   - Total should be ~117M parameters
   - Break down:
     - Token embedding: `40,000 × 768 = ~30.7M`

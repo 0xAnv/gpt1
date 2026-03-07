@@ -180,6 +180,81 @@ class TransformerBlock(nn.Module):
 
         return x;
 
+class GPT1(nn.Module):
+    """
+    Full GPT 1 paper implementation.
+
+    Stacks token + pos embedings, N transformer decoder blocks, and a weight-tied language model head (FFN)
+    
+    Args: 
+        vocab_size: size of vocabulary tokeniser 
+        max_seq_len: maximum sequence length (pos embedding size) 
+        n_layers: Numbers of transformer decoder block 
+        d_model: dimensionality of our hidden state of model 
+        n_heads: parallel heads for multi head self attention comp.
+        d_ff: dimension of feed forward nn 
+        dropout: dropout rate; dtype=float ;usually 0.1
+    """
+    def __init__(
+        self, 
+        vocab_size:int, 
+        max_seq_len:int = 512, 
+        n_layers:int = 12, 
+        d_model:int = 768, 
+        n_heads:int = 12, 
+        d_ff:int = 3072, 
+        dropout:float = 0.1
+    ) -> None :
+        super().__init__()
+
+        self.max_seq_len = max_seq_len 
+
+        # Embeddings 
+        self.token_emb = nn.Embedding(vocab_size, d_model)
+        self.pos_emb = nn.Embedding(max_seq_len, d_model) # learned embeddings 
+        self.emb_dropout = nn.Dropout(dropout)
+
+        # Transformer Blocks 
+        self.blocks = nn.ModuleList([
+            TransformerBlock(d_model=d_model, n_heads=n_heads, d_ff=d_ff, dropout=dropout)
+            for _ in range(n_layers)
+        ])
+
+    def forward(self, x:Tensor) -> Tensor:
+        """
+        Forward pass of the full GPT 1 Model. 
+
+        Args:
+            x : token is tensor of shape (batch, seq_len) 
+
+        Returns:
+            Logits of shape (batch, seq_len, vocab_size)
+        """
+        batch_size, seq_len = x.shape
+
+        assert seq_len <= self.max_seq_len, (
+            f"SEquence length {seq_len} exceeds maximum {self.max_seq_len}"
+        )
+
+        # Create pos indices [0,1,2,3, ... , seq_len - 1]
+        pos_ids = torch.arange(seq_len, device=x.device)
+
+        # Token embedding + pos embedding 
+        x = self.token_emb(x) + self.pos_emb(pos_ids)
+        x = self.emb_dropout(x) # dropout
+
+        # Pass through all transformer decoder blocks 
+        for dec_block in self.blocks:
+            x = dec_block(x)
+
+        # weight tying Language modelling head 
+        # We do not use linear here coz we use weight typing, reducing param count 
+        # weight tying: logits = hidden_state @ token_emb.weight.T 
+        # (batch, max_seq_len, d_model) @ (d_model, vocab_size) = (batch, max_seq_len, vocab_size)
+        logits = x @ self.token_emb.weight.T
+
+        return logits 
+     
 # checking attention 
 
 def check_mha() -> None:
@@ -236,9 +311,39 @@ def check_block() -> None:
     assert torch.allclose(out1[:, :5, :], out2[:, :5, :]), "Block causality broken!"
     print("Block causality verified!")
 
+def check_gpt1() -> None:
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    vocab_size:int = 40_000 
+    model = GPT1(
+        vocab_size=vocab_size, 
+        max_seq_len=512, 
+        n_layers = 12, 
+        d_model=768, 
+        n_heads=12, 
+        d_ff=3072, 
+        dropout=0.1
+    ).to(device) # GPT model to GPU
+
+    # Fake input: batch of 2 seq, each of 10 tokens long 
+    input_ids = torch.randint(0, vocab_size, (2, 10), device=device)
+    logits = model(input_ids)
+
+    print(f"GPT1 Input Shape: {input_ids.shape}")
+    print(f"GPT1 Output Shape: {logits.shape}")
+    print(f"GPT1 Parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+    # Verify causal property
+    model.eval()
+    input_ids_d = input_ids.clone()
+    input_ids_d[:, 5:] = torch.randint(0, vocab_size, (2, 5), device=device)
+    logits, logits_d = model(input_ids), model(input_ids_d) 
+    assert torch.allclose(logits[:, :5, :], logits_d[:, :5, :], atol= 1e-5), "Causalty is Broken !!"
+    print("Causalty Verified!")
 
 if __name__ == "__main__":
     check_mha()
     check_ffn()
     check_block()
+    check_gpt1()
     torch.cuda.empty_cache()
