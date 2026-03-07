@@ -216,7 +216,7 @@
 
 ### 3.1 — Pre-training Data (BooksCorpus)
 
-- [ ] **3.1.1 — Understand the dataset**
+- [x] **3.1.1 — Understand the dataset**
   - BooksCorpus: ~7,000 unique unpublished books, ~800M words
   - Provides long contiguous text — important for learning long-range dependencies
   - **Note:** The original BooksCorpus may be difficult to obtain now. Alternatives:
