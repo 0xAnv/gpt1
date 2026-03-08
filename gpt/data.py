@@ -3,14 +3,21 @@ import logging
 import numpy as np 
 from pathlib import Path 
 
+# data preprocessing and download
 import ftfy # fixes broken unicode texts
 from datasets import load_dataset # bookcorpusopen dataset
 from tqdm import tqdm
 
+# torch specifics
 import torch 
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader, Subset
 
+# finetuning data
+from enum import Enum 
+from dataclasses import dataclass 
+
+# tokeniser
 from gpt.tokenizer import BPETokenizer
 
 logger = logging.getLogger(__name__) 
@@ -181,11 +188,6 @@ def get_pretrain_dataloaders(
 ###################################################################
 #                          FINETUNE DATA
 ###################################################################
-
-from enum import Enum 
-from dataclasses import dataclass 
-from datasets import load_dataset
-
 
 class TaskType(Enum):
     # The four task types from GPT1 paper(check sec 3.3)

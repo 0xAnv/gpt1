@@ -14,7 +14,7 @@ from tokenizers.models import BPE
 from tokenizers.trainers import BpeTrainer 
 from tokenizers.pre_tokenizers import ByteLevel
 from tokenizers.decoders import ByteLevel as ByteLevelDecoder
-from tokenizers.processors import TemplateProcessing
+# from tokenizers.processors import TemplateProcessing
 
 # logger 
 logger = logging.getLogger(__name__)
