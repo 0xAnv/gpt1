@@ -224,7 +224,7 @@
     - Use OpenWebText (used by GPT-2) as a substitute
     - Use a subset for initial experiments given the 12GB VRAM constraint
 
-- [ ] **3.1.2 — Data loading & preprocessing** *(notebook: `05_pretraining.ipynb`)*
+- [x] **3.1.2 — Data loading & preprocessing** *(notebook: `05_pretraining.ipynb`)*
   - Download / load dataset
   - Clean text with `ftfy` (fixes Unicode issues, encoding problems)
   - Tokenize entire corpus into a flat array of token IDs
@@ -235,7 +235,7 @@
     - Random shuffling of chunks
     - Proper batching (no padding needed for pre-training since all sequences are 512)
 
-- [ ] **3.1.3 — Production data module** *(file: `gpt1/data.py`)*
+- [x] **3.1.3 — Production data module** *(file: `gpt1/data.py`)*
   - `PretrainingDataset(data_path, seq_len=512)`
   - `get_pretrain_dataloader(dataset, batch_size, num_workers)`
 

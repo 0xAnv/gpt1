@@ -85,6 +85,12 @@ class ExperimentConfig:
     eval_interval: int = 1_000          # run validation every N steps
     save_interval: int = 5_000          # save checkpoint every N steps
 
+    # ── Data pipeline ───────────────────────────────────────────────────
+    dataset_name: str = "lucadiliello/bookcorpusopen"
+    val_split: float = 0.005
+    num_workers: int = 4
+
+
     # ── Derived (computed, not set in YAML) ─────────────────────────
     @property
     def grad_accum_steps(self) -> int:
