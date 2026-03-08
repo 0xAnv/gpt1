@@ -292,7 +292,7 @@ def _format_classification(
     # Truncate to max_seq_len (cut text tokens, keep start and extract)
     if len(token_ids) > max_seq_len:
         # keep [start] + first (max_seq_len -2) text tokens + [extract]
-        token_ids = [start_id] + text_ids[:, max_seq_len-2] + [cls_id]
+        token_ids = [start_id] + text_ids[:max_seq_len-2] + [cls_id]
     
     # pad on the right 
     attention_len = len(token_ids)
@@ -443,66 +443,66 @@ class FinetuneDataset(Dataset):
             f"type={self.config.task_type.value}"
         )
 
-        def __len__(self) -> int : 
-            return len(self.dataset)
+    def __len__(self) -> int : 
+        return len(self.dataset)
 
-        def __getitem__(self, idx:int) -> dict[str, torch.Tensor]:
-            example = self.dataset[idx]
+    def __getitem__(self, idx:int) -> dict[str, torch.Tensor]:
+        example = self.dataset[idx]
 
-            match self.config.task_type:
+        match self.config.task_type:
 
-                case TaskType.CLASSIFICATION:
-                    token_ids = _format_classification(
-                        text=example[self.config.text_columns[0]], 
-                        tokenizer=self.tokenizer, 
-                        max_seq_len=self.max_seq_len
-                    )
-                    return {
-                        "input_ids": torch.tensor(token_ids, dtype=torch.long), 
-                        "label": torch.tensor(example[self.config.label_column], dtype=torch.long)
-                    }
+            case TaskType.CLASSIFICATION:
+                token_ids = _format_classification(
+                    text=example[self.config.text_columns[0]], 
+                    tokenizer=self.tokenizer, 
+                    max_seq_len=self.max_seq_len
+                )
+                return {
+                    "input_ids": torch.tensor(token_ids, dtype=torch.long), 
+                    "label": torch.tensor(example[self.config.label_column], dtype=torch.long)
+                }
 
-                case TaskType.ENTAILMENT:
-                    token_ids = _format_entailment(
+            case TaskType.ENTAILMENT:
+                token_ids = _format_entailment(
                         text1=example[self.config.text_columns[0]], 
                         text2=example[self.config.text_columns[1]], 
                         tokenizer=self.tokenizer, 
                         max_seq_len=self.max_seq_len
                     ) 
-                    return {
-                        "input_ids": torch.tensor(token_ids, dtype=torch.long), 
-                        "label": torch.tensor(example[self.config.label_column], dtype=torch.long)
-                    }
+                return {
+                    "input_ids": torch.tensor(token_ids, dtype=torch.long), 
+                    "label": torch.tensor(example[self.config.label_column], dtype=torch.long)
+                }
 
-                case TaskType.SIMILARITY:
-                    ids_1, ids2 = _format_similarity(
+            case TaskType.SIMILARITY:
+                ids_1, ids_2 = _format_similarity(
                         text1=example[self.config.text_columns[0]], 
                         text2=example[self.config.text_columns[1]], 
                         tokenizer=self.tokenizer, 
                         max_seq_len=self.max_seq_len
                     )
-                    # For regression (STS-B), label is a float
-                    label_dtype = torch.float if self.config.is_regression else torch.long
-                    return {
-                        "input_ids_1": torch.tensor(ids_1, dtype=torch.long), 
-                        "input_ids_2": torch.tensor(ids_2, dtype=torch.long), 
-                        "label": torch.tensor(example[self.config.label_column], dtype=label_dtype)
-                    }
+                # For regression (STS-B), label is a float
+                label_dtype = torch.float if self.config.is_regression else torch.long
+                return {
+                    "input_ids_1": torch.tensor(ids_1, dtype=torch.long), 
+                    "input_ids_2": torch.tensor(ids_2, dtype=torch.long), 
+                    "label": torch.tensor(example[self.config.label_column], dtype=label_dtype)
+                }
 
-                case TaskType.MULTIPLE_CHOICE:
-                    # RACE: context = article + " " + question
-                    context = example['article'] + " " + example['question']
-                    options = example['options']
-                    all_ids = _format_multiple_choice(
+            case TaskType.MULTIPLE_CHOICE:
+                # RACE: context = article + " " + question
+                context = example['article'] + " " + example['question']
+                options = example['options']
+                all_ids = _format_multiple_choice(
                         context=context, 
                         options=options, 
                         tokenizer=self.tokenizer, 
                         max_seq_len=self.max_seq_len
                     )
-                    return {
-                        "input_ids": torch.tensor(all_ids, dtype=torch.long),# shape: (num_options, max_seq_len)
-                        "label": torch.tensor(example['label'], dtype=torch.long)
-                    }
+                return {
+                    "input_ids": torch.tensor(all_ids, dtype=torch.long),# shape: (num_options, max_seq_len)
+                    "label": torch.tensor(example['label'], dtype=torch.long)
+                }
 
 # Factory function to get dataloaders 
 def get_finetune_dataloaders(
@@ -546,4 +546,3 @@ def get_finetune_dataloaders(
 
     return loaders
 
-    
