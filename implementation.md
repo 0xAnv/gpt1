@@ -270,7 +270,7 @@
 
 > **Paper spec:** Adam optimizer, LR warmup (linear, 2000 steps) → max LR 2.5e-4 → cosine annealing to 0. Batch size 64, sequence length 512. ~100 epochs on BooksCorpus (approx 800k steps).
 
-- [ ] **4.1 — Training loop** *(notebook: `05_pretraining.ipynb` → then `gpt1/train.py`)*
+- [x] **4.1 — Training loop** *(notebook: `05_pretraining.ipynb` → then `gpt1/train.py`)*
   - Implement the language modeling objective:
     - `loss = CrossEntropyLoss(logits[:, :-1, :], targets[:, 1:])`
     - Standard next-token prediction (causal LM)
