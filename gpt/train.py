@@ -254,7 +254,8 @@ def train(config: ExperimentConfig) -> None:
         d_model=config.d_model, 
         n_heads=config.n_heads, 
         d_ff=config.d_ff, 
-        dropout=config.dropout
+        dropout=config.dropout,
+        use_checkpoint=config.grad_checkpoint,  # trade compute for VRAM savings
     ).to(device)
 
     param_info = count_parameters(model)

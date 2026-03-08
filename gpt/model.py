@@ -8,6 +8,7 @@ Architecture: 12- layer transformer decoder with causal(masked) self-attention
 import torch 
 import torch.nn as nn 
 from torch import Tensor # for type hinting 
+from torch.utils.checkpoint import checkpoint as torch_checkpoint  # gradient checkpointing
 
 class MultiHeadAttention(nn.Module):
     """
@@ -47,6 +48,8 @@ class MultiHeadAttention(nn.Module):
     def forward(self, x:Tensor) -> Tensor:
         """ 
         Forward pass for causal multi-head self-attention.
+        Uses PyTorch's scaled_dot_product_attention (Flash Attention) for
+        memory efficiency — avoids materializing the full (seq_len x seq_len) matrix.
 
         Args:
             x: Input tensor of shape (batch, seq_len, d_model)
@@ -66,24 +69,15 @@ class MultiHeadAttention(nn.Module):
         k = k.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1,2)
         v = v.view(batch_size, seq_len, self.n_heads, self.d_k).transpose(1,2)
 
-        # Compute scaled dot product attention scores
-        # (batch, n_heads, seq_len, d_k) @ (batch, n_heads, d_k, seq_len) -> (batch, n_heads, seq_len, seq_len)
-        attn_scores = (q @ k.transpose(-2, -1)) / (self.d_k ** 0.5) # normalised denom
-
-        # Create upper triangular mask (True = positions to MASK OUT)
-        causal_mask = torch.triu(
-            torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool), 
-            diagonal=1
+        # Fused scaled dot-product attention (Flash Attention when available)
+        # is_causal=True automatically applies the causal mask
+        # Replaces: manual Q@K.T, masking, softmax, dropout, @V
+        attn_output = torch.nn.functional.scaled_dot_product_attention(
+            q, k, v,
+            attn_mask=None,
+            dropout_p=self.attn_dropout.p if self.training else 0.0,
+            is_causal=True,
         )
-        attn_scores = attn_scores.masked_fill(causal_mask, float("-inf"))
-
-        # Softmax to get attention weights, then apply dropout 
-        attn_weights = torch.softmax(attn_scores, dim = -1)
-        attn_weights = self.attn_dropout(attn_weights)
-
-        # Weighted sum of layers 
-        # (batch, n_heads, seq_len, seq_len) @ (batch, n_heads, seq_len, d_k) -> (batch, n_heads, seq_len, d_k)
-        attn_output = attn_weights @ v
 
         # Concatenate heads 
         # (batch, n_heads, seq_len, d_k) -> (batch, seq_len, n_heads, d_k) -> (batch, seq_len, d_model)
@@ -203,11 +197,13 @@ class GPT1(nn.Module):
         d_model:int = 768, 
         n_heads:int = 12, 
         d_ff:int = 3072, 
-        dropout:float = 0.1
+        dropout:float = 0.1,
+        use_checkpoint:bool = False,  # gradient checkpointing to save VRAM
     ) -> None :
         super().__init__()
 
         self.max_seq_len = max_seq_len 
+        self.use_checkpoint = use_checkpoint
 
         # Embeddings 
         self.token_emb = nn.Embedding(vocab_size, d_model)
@@ -277,7 +273,10 @@ class GPT1(nn.Module):
 
         # Pass through all transformer decoder blocks 
         for dec_block in self.blocks:
-            x = dec_block(x)
+            if self.use_checkpoint and self.training:
+                x = torch_checkpoint(dec_block, x, use_reentrant=False)
+            else:
+                x = dec_block(x)
 
         # weight tying Language modelling head 
         # We do not use linear here coz we use weight typing, reducing param count 
