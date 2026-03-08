@@ -178,3 +178,87 @@ def get_pretrain_dataloaders(
 
     return train_loader, val_loader
 
+###################################################################
+#                          FINETUNE DATA
+###################################################################
+
+from enum import Enum 
+from dataclasses import dataclass 
+from datasets import load_dataset
+
+
+class TaskType(Enum):
+    # The four task types from GPT1 paper(check sec 3.3)"""
+    CLASSIFICATION = "classification"
+    ENTAILMENT = "entailment"
+    SIMILARITY = "similarity"
+    MULTIPLE_CHOICE = "multiple_choice"
+
+@dataclass(frozen=True)
+class TaskConfig:
+    # Dataclass describing a single downstream task
+    hf_name:str                  # eg. "glue"
+    hf_subset:str | None         # eg. "sst2", or None for single split
+    task_type: TaskType          # type of task (ENUM)
+    text_columns: list[str]      # columns holding input texts
+    label_column: str            # column holding label
+    num_labels: int              # number of output class(regression=1)
+    is_regression:bool = False   # True for STS-B
+
+
+# Task registry - Detailed information on multiple tasks 
+TASK_REGISTRY: dict[str, TaskConfig] = {
+    # ---------- Classification ----------
+    "cola" : TaskConfig(
+        hf_name="glue", hf_subset="cola", task_type=TaskType.CLASSIFICATION, 
+        text_columns=['sentence'], label_column='label', num_labels=2
+    ), 
+
+    "sst2": TaskConfig(
+        hf_name="glue", hf_subset="sst2", task_type=TaskType.CLASSIFICATION, 
+        text_columns=['sentence'], label_column='label', num_labels=2
+    ),
+
+    # ---------- Entailment -----------
+    "mnli" : TaskConfig(
+        hf_name="glue", hf_subset="mnli", task_type=TaskType.ENTAILMENT, 
+        text_columns=['premise', 'hypothesis'], label_column='label', num_labels=3
+    ), 
+    "qnli" : TaskConfig(
+        hf_name="glue", hf_subset="qnli", task_type=TaskType.ENTAILMENT, 
+        text_columns=['question', 'sentence'], label_column='label', num_labels=2
+    ), 
+    "rte": TaskConfig(
+        hf_name="glue", hf_subset="rte", task_type=TaskType.ENTAILMENT, 
+        text_columns=['sentence1', 'sentence2'], label_column='label', num_labels=2
+    ), 
+    "snli": TaskConfig(
+        hf_name="stanford/snli", hf_subset=None, task_type=TaskType.ENTAILMENT, 
+        text_columns=['premise', 'hypothesis'], label_column='label', num_labels=3
+    ), 
+    "scitail": TaskConfig(
+        hf_name="allenai/scitail", hf_subset="tsv_format", task_type=TaskType.ENTAILMENT, 
+        text_columns=['premise', 'hypothesis'], label_column='label', num_labels=2
+    ), 
+
+    # ---------- Similarity ----------
+    "mrpc": TaskConfig(
+        hf_name='glue', hf_subset='mrpc', task_type=TaskType.SIMILARITY, 
+        text_columns=['sentence1', 'sentence2'], label_column='label', num_labels=2
+    ), 
+    "qqp": TaskConfig(
+        hf_name="glue", hf_subset="qqp",task_type=TaskType.SIMILARITY, 
+        text_columns=['question1', 'question2'], label_column='label', 
+        num_labels=2
+    ), 
+    "stsb": TaskConfig(
+        hf_name="glue", hf_subset="stsb", task_type=TaskType.SIMILARITY, 
+        text_columns=['sentence1', 'sentence2'], label_column='label', num_labels=1, is_regression=True
+    ), 
+    # --------------- MUltiple Choice ------------------
+    "race": TaskConfig(
+        hf_name="ehovy/race", hf_subset="all", task_type=TaskType.MULTIPLE_CHOICE, 
+        text_columns=['article', 'question', 'options'], # special handling needed 
+        label_column='answer', num_labels=4
+    )
+}
