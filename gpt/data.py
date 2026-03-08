@@ -262,3 +262,45 @@ TASK_REGISTRY: dict[str, TaskConfig] = {
         label_column='answer', num_labels=4
     )
 }
+
+##################################################################
+#          FINETUNING FORMATING FUNCTIONS
+##################################################################
+
+def _format_classification(
+    text:str, 
+    tokenizer:BPETokenizer, 
+    max_seq_len:int
+) -> list[int] :
+    """
+    Classification: [start] text [extract]
+
+    We encode the text WITHOUT special tokens (no padding, no truncation yet), 
+    then manually wrap it with start and extract tokens, 
+    then truncate/pad the final sequence.
+    """
+    pass 
+
+def _format_entailment(
+    text1:str, 
+    text2:str, 
+    tokenizer:BPETokenizer, 
+    max_seq_len:int
+) -> list[int]:
+    pass 
+
+def _format_similarity(
+    text1:str, 
+    text2:str, 
+    tokenizer:BPETokenizer, 
+    max_seq_len:int
+) -> tuple[list[int], list[int]]:
+    pass
+
+def _format_multiple_choice(
+    context:str, 
+    options:list[str],
+    tokenizer: BPETokenizer, 
+    max_seq_len: int
+) -> list[list[int]]: 
+    pass 
