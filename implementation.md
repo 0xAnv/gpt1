@@ -241,7 +241,7 @@
 
 ### 3.2 — Fine-tuning Data
 
-- [ ] **3.2.1 — Dataset preparation for each task**
+- [x] **3.2.1 — Dataset preparation for each task**
   - Each downstream task requires different input formatting (this is a KEY contribution of the paper):
     - **Classification** (CoLA, SST-2): `[start] text [extract]` → linear head
     - **Entailment/NLI** (MNLI, SNLI, QNLI, RTE, SciTail): `[start] premise [delim] hypothesis [extract]` → linear head
@@ -249,7 +249,7 @@
     - **Multiple Choice / QA** (RACE, Story Cloze): `[start] context [delim] answer_i [extract]` for each answer → independently through model → softmax over answers
   - Create a unified `FinetuneDataset` class that handles all task types
 
-- [ ] **3.2.2 — Download all benchmarks**
+- [x] **3.2.2 — Download all benchmarks**
   - Use HuggingFace `datasets` library:
     - `load_dataset("glue", "cola")` — CoLA
     - `load_dataset("glue", "sst2")` — SST-2
