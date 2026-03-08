@@ -279,7 +279,27 @@ def _format_classification(
     then manually wrap it with start and extract tokens, 
     then truncate/pad the final sequence.
     """
-    pass 
+    start_id = tokenizer.tokeniser.token_to_id(BPETokenizer.START_TOKEN)
+    cls_id = tokenizer.tokeniser.token_to_id(BPETokenizer.CLS_TOKEN)
+    pad_id = tokenizer.tokeniser.token_to_id(BPETokenizer.PAD_TOKEN)
+
+    # Encode raw text (no special tokens, no pad, no truncation)
+    text_ids = tokenizer.encode(text, pad=False, truncate=False)
+
+    # Build: [start] text [extract] 
+    token_ids = [start_id] + text_ids + [cls_id]
+
+    # Truncate to max_seq_len (cut text tokens, keep start and extract)
+    if len(token_ids) > max_seq_len:
+        # keep [start] + first (max_seq_len -2) text tokens + [extract]
+        token_ids = [start_id] + text_ids[:, max_seq_len-2] + [cls_id]
+    
+    # pad on the right 
+    attention_len = len(token_ids)
+    token_ids = token_ids + [pad_id] * (max_seq_len - attention_len)
+
+    return token_ids
+
 
 def _format_entailment(
     text1:str, 
@@ -287,7 +307,38 @@ def _format_entailment(
     tokenizer:BPETokenizer, 
     max_seq_len:int
 ) -> list[int]:
-    pass 
+    """ Entailment/NLI : [start] premise [delim] hypothesis [extract] """
+    start_id = tokenizer.tokeniser.token_to_id(BPETokenizer.START_TOKEN)
+    delim_id = tokenizer.tokeniser.token_to_id(BPETokenizer.END_TOKEN) #</s>
+    cls_id = tokenizer.tokeniser.token_to_id(BPETokenizer.CLS_TOKEN)
+    pad_id = tokenizer.tokeniser.token_to_id(BPETokenizer.PAD_TOKEN)
+
+    text1_ids = tokenizer.encode(text=text1, pad=False, truncate=False)
+    text2_ids = tokenizer.encode(text=text2, pad=False, truncate=False)
+
+    # Build: [start] text1 [delimit] text2 [extract]
+    token_ids = [start_id] + text1_ids + [delim_id] + text2_ids + [cls_id]
+
+    # Truncate: trim text2 first, then text1 if still too long 
+    if len(token_ids) > max_seq_len: 
+        # budget = max_seq_len -3 tokens for [start], [delim], [extract]
+        budget = max_seq_len - 3 
+        # give each half but if one is shorter give rest to other 
+        half = budget // 2
+        if len(text1_ids) <= half:
+            text2_ids = text2_ids[:budget - len(text1_ids)]
+        elif len(text2_ids) <= half:
+            text1_ids = text1_ids[:budget - len(text2_ids)]
+        else:
+            text1_ids = text1_ids[:half]
+            text2_ids = text2_ids[:budget - half]
+        token_ids = [start_id] + text1_ids + [delim_id] + text2_ids + [cls_id]
+    
+    attention_len = len(token_ids)
+    token_ids = token_ids + [pad_id] * (max_seq_len - attention_len)
+
+    return token_ids
+
 
 def _format_similarity(
     text1:str, 
@@ -295,7 +346,17 @@ def _format_similarity(
     tokenizer:BPETokenizer, 
     max_seq_len:int
 ) -> tuple[list[int], list[int]]:
-    pass
+    """
+    Similarity TWO ORDERINGS 
+        ordering1: [start] s1 [delimit] s2 [extract]
+        ordering2: [start] s2 [delimit] s1 [extract]
+
+    Returns a tuple of (ordering_1_ids, ordering_2_ids)
+    """
+    ordering1 = _format_entailment(text1=text1, text2=text2, tokenizer=tokenizer, max_seq_len=max_seq_len)
+    ordering2 = _format_entailment(text1=text2, text2=text1, tokenizer=tokenizer, max_seq_len=max_seq_len)
+
+    return ordering1, ordering2
 
 def _format_multiple_choice(
     context:str, 
@@ -303,5 +364,186 @@ def _format_multiple_choice(
     tokenizer: BPETokenizer, 
     max_seq_len: int
 ) -> list[list[int]]: 
-    pass 
+    """
+    Multiple Choice: one sequence per option
+      [start] context [delim] option_i [extract]
 
+    Returns a list of token_id sequences, one per option.
+    """
+    return [
+        _format_entailment(text1=context, text2=option, tokenizer=tokenizer, max_seq_len=max_seq_len)
+        for option in options
+    ]
+
+
+############################################################
+#                 FINETUNING DATASET
+############################################################
+class FinetuneDataset(Dataset):
+    """
+    Unified Pytorch dataset for all GPT 1 Finetuning tasks. 
+
+    Handles the four task types from the paper (section 3.3):
+        - Classification:    single text -> [start] text [extract]
+        - Entailment:        text pair -> [start] t1 [delimit] t2 [extract]
+        - Similarity:        text pair -> two orderings (elem-wise addition)
+        - Multiple Choice:   context + N options -> N sequences
+    """
+    def __init__(
+        self, 
+        task_name:str, 
+        tokenizer: BPETokenizer, 
+        split:str = "train", 
+        max_seq_len:int = 512
+    ) -> None :
+        super().__init__()
+
+        if task_name not in TASK_REGISTRY: 
+            raise ValueError(
+                f"Unknown Task '{task_name}'. Available: {list(TASK_REGISTRY.keys())}"
+            )
+
+        self.config = TASK_REGISTRY[task_name]
+        self.tokenizer = tokenizer 
+        self.max_seq_len = max_seq_len
+        self.task_name = task_name
+
+        # Load the Hugging Face dataset 
+        if self.config.hf_subset:
+            self.dataset = load_dataset(self.config.hf_name, self.config.hf_subset, split=split)
+        else: 
+            self.dataset = load_dataset(self.config.hf_name, split=split)
+        
+        # Filter out examples with label == -1 (SNLI has some unlabelled examples)
+        if task_name == "snli": 
+            self.dataset = self.dataset.filter(lambda x : x['label'] != -1) 
+        
+        # For SciTail: convert string labels ('entails'/'neutral') to integers
+        if task_name == "scitail":
+            label_map = {"entails": 0, "neutral": 1}
+            self.dataset = self.dataset.map(
+                lambda x : {"label": label_map[x["label"]]}
+            )
+
+        # For RACE: convert letter answer ('A', 'B', 'C', 'D') to integer (0, 1, 2, 3)
+        if task_name == "race": 
+            answer_map = {
+                "A" : 0 , 
+                "B" : 1 , 
+                "C" : 2 , 
+                "D" : 3
+            }
+            self.dataset = self.dataset.map(
+                lambda x : {'label' : answer_map[x['answer']]}
+            )
+
+        logger.info(
+            f"FinetineDataset '{task_name}' loaded - "
+            f"split='{split}', examples={len(self.dataset)}, "
+            f"type={self.config.task_type.value}"
+        )
+
+        def __len__(self) -> int : 
+            return len(self.dataset)
+
+        def __getitem__(self, idx:int) -> dict[str, torch.Tensor]:
+            example = self.dataset[idx]
+
+            match self.config.task_type:
+
+                case TaskType.CLASSIFICATION:
+                    token_ids = _format_classification(
+                        text=example[self.config.text_columns[0]], 
+                        tokenizer=self.tokenizer, 
+                        max_seq_len=self.max_seq_len
+                    )
+                    return {
+                        "input_ids": torch.tensor(token_ids, dtype=torch.long), 
+                        "label": torch.tensor(example[self.config.label_column], dtype=torch.long)
+                    }
+
+                case TaskType.ENTAILMENT:
+                    token_ids = _format_entailment(
+                        text1=example[self.config.text_columns[0]], 
+                        text2=example[self.config.text_columns[1]], 
+                        tokenizer=self.tokenizer, 
+                        max_seq_len=self.max_seq_len
+                    ) 
+                    return {
+                        "input_ids": torch.tensor(token_ids, dtype=torch.long), 
+                        "label": torch.tensor(example[self.config.label_column], dtype=torch.long)
+                    }
+
+                case TaskType.SIMILARITY:
+                    ids_1, ids2 = _format_similarity(
+                        text1=example[self.config.text_columns[0]], 
+                        text2=example[self.config.text_columns[1]], 
+                        tokenizer=self.tokenizer, 
+                        max_seq_len=self.max_seq_len
+                    )
+                    # For regression (STS-B), label is a float
+                    label_dtype = torch.float if self.config.is_regression else torch.long
+                    return {
+                        "input_ids_1": torch.tensor(ids_1, dtype=torch.long), 
+                        "input_ids_2": torch.tensor(ids_2, dtype=torch.long), 
+                        "label": torch.tensor(example[self.config.label_column], dtype=label_dtype)
+                    }
+
+                case TaskType.MULTIPLE_CHOICE:
+                    # RACE: context = article + " " + question
+                    context = example['article'] + " " + example['question']
+                    options = example['options']
+                    all_ids = _format_multiple_choice(
+                        context=context, 
+                        options=options, 
+                        tokenizer=self.tokenizer, 
+                        max_seq_len=self.max_seq_len
+                    )
+                    return {
+                        "input_ids": torch.tensor(all_ids, dtype=torch.long),# shape: (num_options, max_seq_len)
+                        "label": torch.tensor(example['label'], dtype=torch.long)
+                    }
+
+# Factory function to get dataloaders 
+def get_finetune_dataloaders(
+    task_name: str, 
+    tokenizer: BPETokenizer, 
+    batch_size:int = 32, 
+    max_seq_len:int = 512, 
+    num_workers:int = 4
+) -> dict[str, DataLoader]:
+
+    """
+    Creates DataLoaders for a fine-tuning task ( train + validation splits)
+
+    Returns: 
+        A Dict : {"train": train_loader, "validation": val_loader}
+        For MNLI, also includes "validation_mismatched"
+    """
+
+    splits = ["train", "validation"]
+
+    # MNLI has matched and mismatched validation sets 
+    if task_name == "mnli":
+        splits = ["train", "validation_matched", "validation_mismatched"]
+
+    loaders:dict[str, DataLoader] = {}
+    for split in splits: 
+        dataset = FinetuneDataset(
+            task_name=task_name, 
+            tokenizer=tokenizer, 
+            split=split, 
+            max_seq_len=max_seq_len
+        )
+        loaders[split] = DataLoader(
+            dataset=dataset, 
+            batch_size= batch_size, 
+            shuffle=(split=="train"), 
+            num_workers=num_workers, 
+            pin_memory=True, 
+            drop_last=(split == "train")
+        )
+
+    return loaders
+
+    
