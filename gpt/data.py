@@ -188,7 +188,7 @@ from datasets import load_dataset
 
 
 class TaskType(Enum):
-    # The four task types from GPT1 paper(check sec 3.3)"""
+    # The four task types from GPT1 paper(check sec 3.3)
     CLASSIFICATION = "classification"
     ENTAILMENT = "entailment"
     SIMILARITY = "similarity"
@@ -438,7 +438,7 @@ class FinetuneDataset(Dataset):
             )
 
         logger.info(
-            f"FinetineDataset '{task_name}' loaded - "
+            f"FinetuneDataset '{task_name}' loaded - "
             f"split='{split}', examples={len(self.dataset)}, "
             f"type={self.config.task_type.value}"
         )
