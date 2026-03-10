@@ -17,6 +17,7 @@ import logging
 import math 
 import sys 
 import time
+import wandb
 from pathlib import Path 
 
 # torch specifics 
@@ -32,6 +33,7 @@ from gpt.utils import (
     load_config, 
     count_parameters
 )
+from gpt.tokenizer import Tokenizer
 
 # setting up logger 
 logger = logging.getLogger(__name__) 
@@ -207,6 +209,45 @@ def load_checkpoint(
     logger.info(f"Resumed from checkpoint: {path} (step {step})")
     return step
 
+# helper function that uses tokenizer and model generate() method to produce readable strings 
+@torch.no_grad()
+def generate_samples(
+    model: GPT1, 
+    tokenizer: Tokenizer, 
+    device: torch.device, 
+    prompt:str = "The quick brown fox", 
+    num_samples:int = 2, 
+    max_new_tokens:int = 50, 
+    temperature:float = 0.8, 
+    top_k:int = 40
+) -> list[str]:
+    """ Generates few text samples for quality monitoring during training """ 
+    model.eval()
+
+    # encode prompt 
+    input_ids = tokenizer.encode(prompt)
+
+    # convert to tensor and batch it (repeat for num_samples)
+    x = torch.tensor(input_ids, dtype=torch.long,
+    device=device).unsqueeze(0).repeat(num_samples, 1)
+
+    # Generate 
+    generated_ids = model.generate(
+        x, 
+        max_new_tokens=max_new_tokens, 
+        temperature=temperature, 
+        top_k=top_k
+    )
+
+    # Decode 
+    samples = []
+    for i in range(num_samples):
+        # convert tensor to list of ints and decode 
+        decoded = tokenizer.decode(generated_ids[i].tolist())
+        samples.append(decoded)
+
+    model.train()
+    return samples
 
 # main training function 
 def train(config: ExperimentConfig) -> None:
@@ -228,6 +269,8 @@ def train(config: ExperimentConfig) -> None:
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
+
+    tokenizer = Tokenizer.from_file(str(Path(config.data_dir) / "pretrain" / "tokenizer.json"))
 
     # Data 
     data_path = Path(config.data_dir) / "pretrain" / "tokens.bin"
@@ -307,12 +350,17 @@ def train(config: ExperimentConfig) -> None:
         while global_step < config.total_steps:
             step_loss = 0.0 
             step_start = time.time()
+            
+            dt_data = 0.0
+            dt_forward = 0.0
+            dt_backward = 0.0
 
             # Zero grad for next accum cycle 
             optimiser.zero_grad(set_to_none=True)
 
             # Grad accum loop 
             for micro_step in range(grad_accum_steps):
+                t0 = time.time()
                 # get next batch, restart iterator if epoch ends
                 try: 
                     batch = next(train_iter)
@@ -325,6 +373,11 @@ def train(config: ExperimentConfig) -> None:
                 # Create (input, target) pairs for next tokn preidiction
                 inputs = input_ids[:, :-1] # (batch, seq_len-1)
                 targets = input_ids[:, 1:] # (batch, seq_len-1)
+                
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                t1 = time.time()
+                dt_data += (t1 - t0)
 
                 # Forward pass with mixed precision 
                 with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=config.use_amp):
@@ -338,10 +391,22 @@ def train(config: ExperimentConfig) -> None:
                     # is the MEAN over the effective batch, not the SUM 
                     loss = loss / grad_accum_steps
 
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                t2 = time.time()
+                dt_forward += (t2 - t1)
+
                 # backward pass (gradients accum automatically)
                 scaler.scale(loss).backward()
+                
+                if device.type == "cuda":
+                    torch.cuda.synchronize()
+                t3 = time.time()
+                dt_backward += (t3 - t2)
 
                 step_loss += loss.item()
+
+            t4 = time.time()
 
             # optimiser step (once per global step)
             # unscale gradients before clipping 
@@ -355,6 +420,11 @@ def train(config: ExperimentConfig) -> None:
             # Optimiser step + scaler update 
             scaler.step(optimizer=optimiser)
             scaler.update()
+
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            t5 = time.time()
+            dt_optim = t5 - t4
 
             step_time = time.time() - step_start
 
@@ -378,7 +448,9 @@ def train(config: ExperimentConfig) -> None:
                     f"Step {global_step}/{config.total_steps} | "
                     f"loss={step_loss:.4f} | lr={current_lr:.2e} | "
                     f"grad_norm={grad_norm:.2f} | "
-                    f"time={step_time:.2f}s"
+                    f"time={step_time:.2f}s | "
+                    f"data={dt_data:.2f}s | fwd={dt_forward:.2f}s | "
+                    f"bwd={dt_backward:.2f}s | opt={dt_optim:.2f}s"
                 )
             
             # ── Validation ───────────────────────────────────────────
@@ -409,7 +481,27 @@ def train(config: ExperimentConfig) -> None:
                     path=ckpt_path,
                 )
 
-            
+            # ── Text Generation ────────────────────────────────────────
+            if global_step % config.generate_interval == 0 and global_step > 0:
+                logger.info(f"Generating samples at step {global_step}...")
+                samples = generate_samples(
+                    model=model,
+                    tokenizer=tokenizer,
+                    device=device,
+                    prompt="The meaning of life is",
+                    max_new_tokens=50
+                )
+                
+                # Print to console
+                for i, text in enumerate(samples):
+                    logger.info(f"Sample {i+1}:\n{text}\n")
+                
+                # Log to wandb using an HTML format for nice formatting
+                html_str = "<h3>Generated Samples</h3>"
+                for i, text in enumerate(samples):
+                    html_str += f"<b>Sample {i+1}:</b><br/>{text}<hr/>"
+                
+                wandb.log({"samples/generated_text": wandb.Html(html_str)}, step=global_step)
 
             # LR scheduler step 
             scheduler.step()

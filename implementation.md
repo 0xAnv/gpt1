@@ -281,7 +281,7 @@
   - Gradient clipping: clip global norm to 1.0 (standard practice)
   - Weight decay: 0.01 (L2 regularization on all params except biases and LayerNorm)
 
-- [ ] **4.2 — Memory optimization for RTX 3060 (12 GB)**
+- [x] **4.2 — Memory optimization for RTX 3060 (12 GB)**
   - Calculate memory budget:
     - Model: ~117M params × 4 bytes (fp32) = ~468 MB
     - Optimizer (Adam): 2× model size = ~936 MB
@@ -295,7 +295,7 @@
     - **Efficient attention:** For 512 seq_len this is manageable, but consider `torch.nn.functional.scaled_dot_product_attention` (Flash Attention)
   - Estimate realistic micro batch size through experiments
 
-- [ ] **4.3 — Training infrastructure**
+- [x] **4.3 — Training infrastructure**
   - Checkpointing: Save model, optimizer, scheduler, step number every N steps
   - Resume from checkpoint
   - Logging to wandb every K steps:

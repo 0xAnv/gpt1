@@ -285,6 +285,44 @@ class GPT1(nn.Module):
         logits = x @ self.token_emb.weight.T
 
         return logits 
+
+    @torch.no_grad() 
+    def generate(
+        self, 
+        idx: torch.Tensor, 
+        max_new_tokens:int, 
+        temperature:float = 1.0, 
+        top_k:int | None = None
+    ) -> torch.Tensor:
+        """
+        Take a sequence of indices idx (LongTensor of shape (b, t)) and complete
+        the sequence max_new_tokens times, feeding the predictions back into the model each time. 
+        """
+        for _ in range(max_new_tokens): 
+            # If the sequence is growing too long we will crop it to max_seq_len
+            idx_cond = idx if idx.size(1) <= self.max_seq_len else idx[:, -self.max_seq_len:]
+
+            # Forward the model to get logits for index in the sequence 
+            logits = self(idx_cond)
+
+            # take logits at final step and scale by desired temperature 
+            logits = logits[:, -1, :] / temperature
+
+            # optionally crop logits to only top k options
+            if top_k is not None:
+                v, _ = torch.topk(logits, min(top_k, logits.size(-1)))
+                logits[logits < v[:, [-1]]] = -float("Inf")
+            
+            # Apply softmax to convert logits to normalized 
+            probs = torch.nn.functional.softmax(logits, dim=-1)
+
+            # sample from the distribution 
+            idx_next = torch.multinomial(probs, num_samples=1)
+
+            # append sampled index to the running sequence to continue 
+            idx = torch.cat((idx, idx_next), dim = 1)
+
+        return idx
      
 # checking attention 
 

@@ -22,69 +22,97 @@ from gpt.tokenizer import BPETokenizer
 
 logger = logging.getLogger(__name__) 
 
+
 # pretrain data preparation function 
 def prepare_pretrain_data(
     tokenizer_path:str | Path, 
     output_dir:str | Path = "data/pretrain", 
     dataset_name:str = "lucadiliello/bookcorpusopen", 
     dataset_split:str = "train", 
-    max_books:int | None = None
+    max_books:int | None = None,
+    chunk_size: int = 1000
 ) -> Path : 
 
     if not Path(tokenizer_path).exists():
         raise FileNotFoundError(f"Tokeniser not found at: {tokenizer_path}")
 
-    # Load the dataset 
-    dataset = load_dataset(dataset_name, split=dataset_split)
+    # Load the dataset with streaming to save memory
+    dataset = load_dataset(dataset_name, split=dataset_split, streaming=True)
 
     # Optional subset 
     if max_books is not None:
-        dataset = dataset.select(range(min(max_books, len(dataset))))
+        dataset = dataset.take(max_books)
 
-    # Load our tokeniser 
+    import os
+    import multiprocessing
+    
+
+    # Load our tokeniser
     tokeniser = BPETokenizer(tokeniser_path=tokenizer_path)
 
-    # Count total tokens 
-    total_tokens = 0 
-    for example in tqdm(dataset, desc="COunting tokens"):
-        text = ftfy.fix_text(example['text'])  # clean the text 
-        token_ids = tokeniser.encode(text=text, pad=False, truncate=False)
-        total_tokens += len(token_ids)
+    # Force Rust's Rayon library to use all available cores for encode_batch
+    num_proc = str(max(1, multiprocessing.cpu_count()))
+    os.environ["RAYON_RS_NUM_CPUS"] = num_proc
+    os.environ["RAYON_NUM_THREADS"] = num_proc
+    # create the output directory
+    output_dir_path = Path(output_dir)
+    output_dir_path.mkdir(parents=True, exist_ok=True)
 
-    logger.info(f"Total tokens are: {total_tokens}")
+    bin_path = output_dir_path / "tokens.bin"
 
-    # create the output directoruy 
-    output_dir = Path(output_dir) 
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # We don't know the exact size yet, so we will append to binary file
+    # Initialize file empty
+    with open(bin_path, "wb") as f:
+        pass
 
-    bin_path = output_dir / "tokens.bin" 
+    total_tokens = 0
+    num_docs = 0
+    
+    # Estimate total for progress bar (bookcorpusopen has ~17,868 books)
+    total_to_process = max_books if max_books else 17868
 
-    # create memory map (memmap) with known size
-    token_array = np.memmap(bin_path, dtype=np.uint16, mode="w+", shape=(total_tokens, ))
+    logger.info(f"Tokenizing dataset using native Rust multithreading ({num_proc} cores) in chunks of {chunk_size}...")
 
-    # Fill it up ;)
-    offset = 0
-    for example in tqdm(dataset, desc="Writing tokens"):
-        text = ftfy.fix_text(example['text']) 
-        token_ids = tokeniser.encode(text=text, pad=False, truncate=False) 
-        length = len(token_ids) 
-        token_array[offset : offset + length] = token_ids
-        offset += length
-
-    # Flush our shit to disk
-    token_array.flush() 
+    with open(bin_path, "ab") as f:
+        # We manually chunk the dataset iteration to minimize python string footprint in RAM
+        chunk = []
+        for example in tqdm(dataset, total=total_to_process, desc="Tokenizing & writing to disk", unit="book"):
+            chunk.append(ftfy.fix_text(example['text']))
+            num_docs += 1
+            
+            if len(chunk) == chunk_size:
+                # encode_batch uses Rust rayon to tokenize the chunk on all CPU cores natively!
+                batch_ids = tokeniser.encode(chunk, pad=False, truncate=False)
+                
+                # batch_ids is a list of lists of token ids. flatten it.
+                flat_ids = [token_id for seq in batch_ids for token_id in seq]
+                if flat_ids:
+                    data_bytes = np.array(flat_ids, dtype=np.uint16).tobytes()
+                    f.write(data_bytes)
+                    total_tokens += len(flat_ids)
+                    
+                chunk = [] # release memory rapidly
+                
+        # process any remaining sentences in the final uneven chunk
+        if chunk:
+            batch_ids = tokeniser.encode(chunk, pad=False, truncate=False)
+            flat_ids = [token_id for seq in batch_ids for token_id in seq]
+            if flat_ids:
+                data_bytes = np.array(flat_ids, dtype=np.uint16).tobytes()
+                f.write(data_bytes)
+                total_tokens += len(flat_ids)
 
     # saving companion json file for metadata 
     metadata = {
         "total_tokens": total_tokens, 
         "vocab_size": tokeniser.vocab_size, 
         "dataset_name": dataset_name, 
-        "num_books": len(dataset),
+        "num_books": num_docs,
         "dtype":"uint16"
     }
     
     # metadata tells about what the bin file contains
-    metadata_path = output_dir/"metadata.json"
+    metadata_path = output_dir_path/"metadata.json"
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2)
     

@@ -48,6 +48,7 @@ wandb_project: "GPT1"
 log_interval: 50              # log training metrics every N steps
 eval_interval: 1000           # run validation every N steps
 save_interval: 5000           # save checkpoint every N steps
+generate_interval: 1000       # generate text samples every N steps
 
 # ── Data pipeline ─────────────────────────────────────────────────────
 dataset_name: "lucadiliello/bookcorpusopen"

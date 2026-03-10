@@ -90,6 +90,12 @@ class ExperimentConfig:
     val_split: float = 0.005
     num_workers: int = 4
 
+    # ── Logging intervals ───────────────────────────────────────────
+    log_interval: int = 50              # log metrics every N steps
+    eval_interval: int = 1_000          # run validation every N steps
+    save_interval: int = 5_000          # save checkpoint every N steps
+    generate_interval: int = 1_000      # generate text samples every N steps
+
 
     # ── Derived (computed, not set in YAML) ─────────────────────────
     @property
