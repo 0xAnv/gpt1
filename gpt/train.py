@@ -116,7 +116,8 @@ def create_optimizer(
         param_groups, 
         lr = lr, 
         betas=betas, 
-        eps=eps
+        eps=eps,
+        fused=True if torch.cuda.is_available() else False
     )
 
     return optimizer
@@ -225,11 +226,10 @@ def generate_samples(
     model.eval()
 
     # encode prompt 
-    input_ids = tokenizer.encode(prompt)
+    input_ids = tokenizer.encode(prompt).ids
 
     # convert to tensor and batch it (repeat for num_samples)
-    x = torch.tensor(input_ids, dtype=torch.long,
-    device=device).unsqueeze(0).repeat(num_samples, 1)
+    x = torch.tensor(input_ids, dtype=torch.long, device=device).unsqueeze(0).repeat(num_samples, 1)
 
     # Generate 
     generated_ids = model.generate(
@@ -273,6 +273,7 @@ def train(config: ExperimentConfig) -> None:
     # allow tf32 for tensor core optimization on ampere+ gpus 
     if device.type == "cuda":
         torch.set_float32_matmul_precision("high")
+        torch.backends.cudnn.benchmark = True # Auto-tuner for cudnn algorithms
 
     tokenizer = Tokenizer.from_file(str(Path(config.data_dir) / "pretrain" / "tokenizer.json"))
 
@@ -334,8 +335,21 @@ def train(config: ExperimentConfig) -> None:
     # Mixed precision scaler 
     scaler = GradScaler(enabled=config.use_amp)
 
+    # Auto-resume logic
+    if not config.resume_from:
+        # Check if any existing checkpoints exist in the directory
+        ckpt_dir = Path(config.checkpoint_dir)
+        if ckpt_dir.exists():
+            ckpts = list(ckpt_dir.glob("step_*.pt"))
+            if ckpts:
+                # Find highest step
+                latest_ckpt = max(ckpts, key=lambda p: int(p.stem.split('_')[1]))
+                logger.info(f"Auto-detected latest checkpoint: {latest_ckpt}")
+                config.resume_from = str(latest_ckpt)
+
     # Resume from checkpoint 
     start_step = 0 
+    resume_run_id = None
     if config.resume_from: 
         start_step = load_checkpoint(
             path=Path(config.resume_from), 
@@ -344,9 +358,15 @@ def train(config: ExperimentConfig) -> None:
             scheduler=scheduler,
             scaler=scaler
         )
+        # Check if there's an associated wandb state to resume 
+        wandb_id_path = Path(config.checkpoint_dir) / ".wandb_id"
+        if wandb_id_path.exists():
+            with open(wandb_id_path, "r") as f:
+                resume_run_id = f.read().strip()
+            logger.info(f"Found existing W&B run ID: {resume_run_id} to append tracking")
 
     # Training Loop 
-    with ExperimentTracker(config, run_name="pretrain-V1") as tracker:
+    with ExperimentTracker(config, run_name="pretrain-V1", run_id=resume_run_id) as tracker:
         model.train()
 
         global_step = start_step
@@ -356,180 +376,195 @@ def train(config: ExperimentConfig) -> None:
         # not total epochs. When the DataLoader is exhausted, restart it. 
         train_iter = iter(train_loader)
 
-        while global_step < config.total_steps:
-            step_loss = 0.0 
-            step_start = time.perf_counter()
-            
-            dt_data = 0.0
-            dt_forward = 0.0
-            dt_backward = 0.0
+        from tqdm import tqdm
+        pbar = tqdm(
+            total=config.total_steps,
+            initial=global_step,
+            desc="Pre-training",
+            dynamic_ncols=True,
+            smoothing=0.01
+        )
 
-            # Zero grad for next accum cycle 
-            optimiser.zero_grad(set_to_none=True)
-
-            # Grad accum loop 
-            for micro_step in range(grad_accum_steps):
-                t0 = time.perf_counter()
-                # get next batch, restart iterator if epoch ends
-                try: 
-                    batch = next(train_iter)
-                except StopIteration:
-                    train_iter = iter(train_loader)
-                    batch = next(train_iter)
+        try:
+            while global_step < config.total_steps:
+                step_loss = 0.0 
+                step_start = time.perf_counter()
                 
-                input_ids = batch['input_ids'].to(device)
+                dt_data = 0.0
+                dt_forward = 0.0
+                dt_backward = 0.0
 
-                # Create (input, target) pairs for next tokn preidiction
-                inputs = input_ids[:, :-1] # (batch, seq_len-1)
-                targets = input_ids[:, 1:] # (batch, seq_len-1)
-                
+                # Zero grad for next accum cycle 
+                optimiser.zero_grad(set_to_none=True)
+
+                # Grad accum loop 
+                for micro_step in range(grad_accum_steps):
+                    t0 = time.perf_counter()
+                    # get next batch, restart iterator if epoch ends
+                    try: 
+                        batch = next(train_iter)
+                    except StopIteration:
+                        train_iter = iter(train_loader)
+                        batch = next(train_iter)
+                    
+                    input_ids = batch['input_ids'].to(device)
+
+                    # Create (input, target) pairs for next tokn preidiction
+                    inputs = input_ids[:, :-1] # (batch, seq_len-1)
+                    targets = input_ids[:, 1:] # (batch, seq_len-1)
+                    
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    t1 = time.perf_counter()
+                    dt_data += (t1 - t0)
+
+                    # Forward pass with mixed precision 
+                    with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=config.use_amp):
+                        logits = model(inputs)
+                        loss = nn.functional.cross_entropy(
+                            logits.reshape(-1, logits.size(-1)), # (B*T, vocab_size)
+                            targets.reshape(-1), # (B*T)
+                        )
+
+                        # scale loss by accumulation steps so total gradient 
+                        # is the MEAN over the effective batch, not the SUM 
+                        loss = loss / grad_accum_steps
+
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    t2 = time.perf_counter()
+                    dt_forward += (t2 - t1)
+
+                    # backward pass (gradients accum automatically)
+                    scaler.scale(loss).backward()
+                    
+                    if device.type == "cuda":
+                        torch.cuda.synchronize()
+                    t3 = time.perf_counter()
+                    dt_backward += (t3 - t2)
+
+                    step_loss += loss.item()
+
+                t4 = time.perf_counter()
+
+                # optimiser step (once per global step)
+                # unscale gradients before clipping 
+                scaler.unscale_(optimizer=optimiser)
+
+                # clip grad norms 
+                grad_norm = nn.utils.clip_grad_norm_(
+                    model.parameters(), config.grad_clip
+                )
+
+                # Optimiser step + scaler update 
+                scaler.step(optimizer=optimiser)
+                scaler.update()
+
                 if device.type == "cuda":
                     torch.cuda.synchronize()
-                t1 = time.perf_counter()
-                dt_data += (t1 - t0)
+                t5 = time.perf_counter()
+                dt_optim = t5 - t4
 
-                # Forward pass with mixed precision 
-                with torch.autocast(device_type="cuda", dtype=torch.float16, enabled=config.use_amp):
-                    logits = model(inputs)
-                    loss = nn.functional.cross_entropy(
-                        logits.reshape(-1, logits.size(-1)), # (B*T, vocab_size)
-                        targets.reshape(-1), # (B*T)
+                step_time = time.perf_counter() - step_start
+
+                current_lr = scheduler.get_last_lr()[0]
+                
+                # Update progress bar
+                pbar.update(1)
+                pbar.set_postfix({"loss": f"{step_loss:.4f}", "lr": f"{current_lr:.1e}"})
+
+                # ── Logging ──────────────────────────────────────────────
+                if global_step % config.log_interval == 0 and global_step>0:
+                    tokens_per_step = (
+                        config.micro_batch_size
+                        * (config.max_seq_len - 1)  # -1 because input is shifted
+                        * grad_accum_steps
+                    )
+                    tracker.log_train_step(
+                        step=global_step,
+                        loss=step_loss,
+                        lr=current_lr,
+                        grad_norm=grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
+                        tokens_processed=tokens_per_step,
+                        step_time=step_time,
+                    )
+                    # We remove the logger.info spam here since tqdm handles it now
+                
+                # ── Validation ───────────────────────────────────────────
+                if global_step % config.eval_interval == 0 and global_step>0:
+                    val_metrics = validate(model, val_loader, device, config.use_amp)
+                    tracker.log_validation(
+                        step=global_step,
+                        val_loss=val_metrics["val_loss"],
+                        perplexity=val_metrics["perplexity"],
+                    )
+                    logger.info(
+                        f"\nStep {global_step} Validation | loss={val_metrics['val_loss']:.4f} | "
+                        f"ppl={val_metrics['perplexity']:.2f}"
+                    )
+                
+                # ── Checkpointing ────────────────────────────────────────
+                if global_step % config.save_interval == 0 and global_step>0:
+                    ckpt_path = (
+                        Path(config.checkpoint_dir) / f"step_{global_step}.pt"
+                    )
+                    save_checkpoint(
+                        model=model,
+                        optimiser=optimiser,
+                        scheduler=scheduler,
+                        scaler=scaler,
+                        step=global_step,
+                        config=config,
+                        path=ckpt_path,
                     )
 
-                    # scale loss by accumulation steps so total gradient 
-                    # is the MEAN over the effective batch, not the SUM 
-                    loss = loss / grad_accum_steps
+                # ── Text Generation ────────────────────────────────────────
+                if global_step % config.generate_interval == 0 and global_step > 0:
+                    logger.info(f"\nGenerating samples at step {global_step}...")
+                    samples = generate_samples(
+                        model=model,
+                        tokenizer=tokenizer,
+                        device=device,
+                        prompt="The meaning of life is",
+                        max_new_tokens=50
+                    )
+                    
+                    # Print to console
+                    for i, text in enumerate(samples):
+                        logger.info(f"Sample {i+1}:\n{text}\n")
+                    
+                    # Log to wandb using an HTML format for nice formatting
+                    html_str = "<h3>Generated Samples</h3>"
+                    for i, text in enumerate(samples):
+                        html_str += f"<b>Sample {i+1}:</b><br/>{text}<hr/>"
+                    
+                    wandb.log({"samples/generated_text": wandb.Html(html_str)}, step=global_step)
 
-                if device.type == "cuda":
-                    torch.cuda.synchronize()
-                t2 = time.perf_counter()
-                dt_forward += (t2 - t1)
+                # LR scheduler step 
+                scheduler.step()
 
-                # backward pass (gradients accum automatically)
-                scaler.scale(loss).backward()
+                global_step += 1 
                 
-                if device.type == "cuda":
-                    torch.cuda.synchronize()
-                t3 = time.perf_counter()
-                dt_backward += (t3 - t2)
+        except KeyboardInterrupt:
+            logger.info("\nTraining interrupted by user. Saving emergency checkpoint...")
+            
+        finally:
+            pbar.close()
+            # ── Final checkpoint after training completes (or crashes) ──
+            final_path = Path(config.checkpoint_dir) / f"step_{global_step}_interrupted.pt"
+            if global_step >= config.total_steps:
+                final_path = Path(config.checkpoint_dir) / "final.pt"
 
-                step_loss += loss.item()
-
-            t4 = time.perf_counter()
-
-            # optimiser step (once per global step)
-            # unscale gradients before clipping 
-            scaler.unscale_(optimizer=optimiser)
-
-            # clip grad norms 
-            grad_norm = nn.utils.clip_grad_norm_(
-                model.parameters(), config.grad_clip
+            save_checkpoint(
+                model=model,
+                optimiser=optimiser,
+                scheduler=scheduler,
+                scaler=scaler,
+                step=global_step,
+                config=config,
+                path=final_path,
             )
-
-            # Optimiser step + scaler update 
-            scaler.step(optimizer=optimiser)
-            scaler.update()
-
-            if device.type == "cuda":
-                torch.cuda.synchronize()
-            t5 = time.perf_counter()
-            dt_optim = t5 - t4
-
-            step_time = time.perf_counter() - step_start
-
-            # ── Logging ──────────────────────────────────────────────
-            if global_step % config.log_interval == 0 and global_step>0:
-                current_lr = scheduler.get_last_lr()[0]
-                tokens_per_step = (
-                    config.micro_batch_size
-                    * (config.max_seq_len - 1)  # -1 because input is shifted
-                    * grad_accum_steps
-                )
-                tracker.log_train_step(
-                    step=global_step,
-                    loss=step_loss,
-                    lr=current_lr,
-                    grad_norm=grad_norm.item() if isinstance(grad_norm, torch.Tensor) else grad_norm,
-                    tokens_processed=tokens_per_step,
-                    step_time=step_time,
-                )
-                logger.info(
-                    f"Step {global_step}/{config.total_steps} | "
-                    f"loss={step_loss:.4f} | lr={current_lr:.2e} | "
-                    f"grad_norm={grad_norm:.2f} | "
-                    f"time={step_time:.2f}s | "
-                    f"data={dt_data:.2f}s | fwd={dt_forward:.2f}s | "
-                    f"bwd={dt_backward:.2f}s | opt={dt_optim:.2f}s"
-                )
-            
-            # ── Validation ───────────────────────────────────────────
-            if global_step % config.eval_interval == 0 and global_step>0:
-                val_metrics = validate(model, val_loader, device, config.use_amp)
-                tracker.log_validation(
-                    step=global_step,
-                    val_loss=val_metrics["val_loss"],
-                    perplexity=val_metrics["perplexity"],
-                )
-                logger.info(
-                    f"Validation | loss={val_metrics['val_loss']:.4f} | "
-                    f"ppl={val_metrics['perplexity']:.2f}"
-                )
-            
-            # ── Checkpointing ────────────────────────────────────────
-            if global_step % config.save_interval == 0 and global_step>0:
-                ckpt_path = (
-                    Path(config.checkpoint_dir) / f"step_{global_step}.pt"
-                )
-                save_checkpoint(
-                    model=model,
-                    optimiser=optimiser,
-                    scheduler=scheduler,
-                    scaler=scaler,
-                    step=global_step,
-                    config=config,
-                    path=ckpt_path,
-                )
-
-            # ── Text Generation ────────────────────────────────────────
-            if global_step % config.generate_interval == 0 and global_step > 0:
-                logger.info(f"Generating samples at step {global_step}...")
-                samples = generate_samples(
-                    model=model,
-                    tokenizer=tokenizer,
-                    device=device,
-                    prompt="The meaning of life is",
-                    max_new_tokens=50
-                )
-                
-                # Print to console
-                for i, text in enumerate(samples):
-                    logger.info(f"Sample {i+1}:\n{text}\n")
-                
-                # Log to wandb using an HTML format for nice formatting
-                html_str = "<h3>Generated Samples</h3>"
-                for i, text in enumerate(samples):
-                    html_str += f"<b>Sample {i+1}:</b><br/>{text}<hr/>"
-                
-                wandb.log({"samples/generated_text": wandb.Html(html_str)}, step=global_step)
-
-            # LR scheduler step 
-            scheduler.step()
-
-            global_step += 1 
-            
-
-        # ── Final checkpoint after training completes ────────────────
-        final_path = Path(config.checkpoint_dir) / "final.pt"
-        save_checkpoint(
-            model=model,
-            optimiser=optimiser,
-            scheduler=scheduler,
-            scaler=scaler,
-            step=global_step,
-            config=config,
-            path=final_path,
-        )
-        logger.info(f"Training complete at step {global_step}.")
+            logger.info(f"Training loop concluded. Last state saved at step {global_step}.")
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:

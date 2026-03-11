@@ -197,7 +197,8 @@ def get_pretrain_dataloaders(
         shuffle=True, 
         num_workers=num_workers, 
         pin_memory=True, 
-        drop_last=True
+        drop_last=True,
+        prefetch_factor=4 if num_workers > 0 else None
     )
 
     val_loader = DataLoader(
@@ -206,7 +207,8 @@ def get_pretrain_dataloaders(
         shuffle=False, 
         num_workers=num_workers, 
         pin_memory=True, 
-        drop_last=False
+        drop_last=False,
+        prefetch_factor=4 if num_workers > 0 else None
     )
 
     logger.info(

@@ -280,6 +280,7 @@ class ExperimentTracker:
         self,
         config: ExperimentConfig,
         run_name: str,
+        run_id: str | None = None,
         tags: list[str] | None = None,
         notes: str = "",
     ):
@@ -287,11 +288,20 @@ class ExperimentTracker:
         self.run = wandb.init(
             project=config.wandb_project,
             name=run_name,
+            id=run_id,
+            resume="allow" if run_id else None,
             config={**asdict(config), **get_gpu_info()},
             tags=tags or [],
             notes=notes,
             save_code=True,
         )
+
+        # Save the W&B Run ID so we can resume if training crashes
+        if self.run is not None and getattr(self.run, "id", None):
+            id_path = Path(config.checkpoint_dir) / ".wandb_id"
+            id_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(id_path, "w") as f:
+                f.write(self.run.id)
 
         # Tell wandb that "gpu/*" metrics use the training step as x-axis
         # This ensures they appear as proper charts rather than being ignored

@@ -13,17 +13,17 @@ n_layers: 12
 n_heads: 12
 d_model: 768
 d_ff: 3072                    # 4 × d_model
-vocab_size: 40000
+vocab_size: 40960
 
 max_seq_len: 512
 dropout: 0.1
 
 # ── Pre-training hyperparameters ──────────────────────────────────────────
 batch_size: 64
-micro_batch_size: 8           # actual GPU batch; accumulate 8 steps → effective 64
+micro_batch_size: 16          # actual GPU batch; accumulate 4 steps → effective 64
 lr: 2.5e-4                    # peak learning rate
 warmup_steps: 2000            # linear warmup from 0 → lr
-total_steps: 800000           # ~100 epochs on BooksCorpus
+total_steps: 8000             # ~3.5 hours for rapid completion
 weight_decay: 0.01            # L2 on all params except biases & LayerNorm
 grad_clip: 1.0                # global gradient norm clipping
 
@@ -48,9 +48,9 @@ resume_from: ""               # path to checkpoint to resume from (empty = start
 # ── Logging ──────────────────────────────────────────────────────────────
 wandb_project: "GPT1"
 log_interval: 50              # log training metrics every N steps
-eval_interval: 1000           # run validation every N steps
-save_interval: 5000           # save checkpoint every N steps
-generate_interval: 1000       # generate text samples every N steps
+eval_interval: 500            # run validation every N steps
+save_interval: 1000           # save checkpoint every N steps
+generate_interval: 500        # generate text samples every N steps
 
 # ── Data pipeline ─────────────────────────────────────────────────────
 dataset_name: "lucadiliello/bookcorpusopen"
