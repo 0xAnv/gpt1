@@ -14,6 +14,7 @@ n_heads: 12
 d_model: 768
 d_ff: 3072                    # 4 × d_model
 vocab_size: 40000
+
 max_seq_len: 512
 dropout: 0.1
 
@@ -37,6 +38,7 @@ lr_schedule: "cosine"         # "cosine" | "linear"
 # ── Precision & performance ──────────────────────────────────────────────
 use_amp: true                 # mixed-precision (fp16) for RTX 3060
 grad_checkpoint: false        # gradient checkpointing (trade compute for memory)
+compile: false                # use PyTorch 2.0 torch.compile
 
 # ── Paths ────────────────────────────────────────────────────────────────
 data_dir: "data/"

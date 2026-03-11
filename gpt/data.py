@@ -84,23 +84,28 @@ def prepare_pretrain_data(
                 # encode_batch uses Rust rayon to tokenize the chunk on all CPU cores natively!
                 batch_ids = tokeniser.encode(chunk, pad=False, truncate=False)
                 
-                # batch_ids is a list of lists of token ids. flatten it.
-                flat_ids = [token_id for seq in batch_ids for token_id in seq]
-                if flat_ids:
-                    data_bytes = np.array(flat_ids, dtype=np.uint16).tobytes()
-                    f.write(data_bytes)
-                    total_tokens += len(flat_ids)
+                # batch_ids is a list of lists of token ids. Write sequence by sequence to save RAM.
+                for seq in batch_ids:
+                    if seq:
+                        data_bytes = np.array(seq, dtype=np.uint16).tobytes()
+                        f.write(data_bytes)
+                        total_tokens += len(seq)
                     
+                # force garbage collection to prevent memory leaks from python lists
+                import gc
+                del batch_ids, chunk
+                gc.collect()
+                
                 chunk = [] # release memory rapidly
                 
         # process any remaining sentences in the final uneven chunk
         if chunk:
             batch_ids = tokeniser.encode(chunk, pad=False, truncate=False)
-            flat_ids = [token_id for seq in batch_ids for token_id in seq]
-            if flat_ids:
-                data_bytes = np.array(flat_ids, dtype=np.uint16).tobytes()
-                f.write(data_bytes)
-                total_tokens += len(flat_ids)
+            for seq in batch_ids:
+                if seq:
+                    data_bytes = np.array(seq, dtype=np.uint16).tobytes()
+                    f.write(data_bytes)
+                    total_tokens += len(seq)
 
     # saving companion json file for metadata 
     metadata = {

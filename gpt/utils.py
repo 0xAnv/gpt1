@@ -73,6 +73,7 @@ class ExperimentConfig:
     # ── Precision & performance ─────────────────────────────────────
     use_amp: bool = True                # mixed-precision (fp16)
     grad_checkpoint: bool = False       # gradient checkpointing
+    compile: bool = False               # use torch.compile
 
     # ── Infrastructure ──────────────────────────────────────────────
     wandb_project: str = "GPT1"

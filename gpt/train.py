@@ -270,6 +270,10 @@ def train(config: ExperimentConfig) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
+    # allow tf32 for tensor core optimization on ampere+ gpus 
+    if device.type == "cuda":
+        torch.set_float32_matmul_precision("high")
+
     tokenizer = Tokenizer.from_file(str(Path(config.data_dir) / "pretrain" / "tokenizer.json"))
 
     # Data 
@@ -305,6 +309,11 @@ def train(config: ExperimentConfig) -> None:
     logger.info(
         f"Model created: {param_info['trainable']:,} trainable params, {param_info['total']:,} total params"
     )
+
+    if config.compile:
+        logger.info("Compiling model using torch.compile...")
+        # Since we are using fused kernels, compile mode "default" or "reduce-overhead" is great
+        model = torch.compile(model)
 
     # optimiser 
     optimiser = create_optimizer(
@@ -349,7 +358,7 @@ def train(config: ExperimentConfig) -> None:
 
         while global_step < config.total_steps:
             step_loss = 0.0 
-            step_start = time.time()
+            step_start = time.perf_counter()
             
             dt_data = 0.0
             dt_forward = 0.0
@@ -360,7 +369,7 @@ def train(config: ExperimentConfig) -> None:
 
             # Grad accum loop 
             for micro_step in range(grad_accum_steps):
-                t0 = time.time()
+                t0 = time.perf_counter()
                 # get next batch, restart iterator if epoch ends
                 try: 
                     batch = next(train_iter)
@@ -376,7 +385,7 @@ def train(config: ExperimentConfig) -> None:
                 
                 if device.type == "cuda":
                     torch.cuda.synchronize()
-                t1 = time.time()
+                t1 = time.perf_counter()
                 dt_data += (t1 - t0)
 
                 # Forward pass with mixed precision 
@@ -393,7 +402,7 @@ def train(config: ExperimentConfig) -> None:
 
                 if device.type == "cuda":
                     torch.cuda.synchronize()
-                t2 = time.time()
+                t2 = time.perf_counter()
                 dt_forward += (t2 - t1)
 
                 # backward pass (gradients accum automatically)
@@ -401,12 +410,12 @@ def train(config: ExperimentConfig) -> None:
                 
                 if device.type == "cuda":
                     torch.cuda.synchronize()
-                t3 = time.time()
+                t3 = time.perf_counter()
                 dt_backward += (t3 - t2)
 
                 step_loss += loss.item()
 
-            t4 = time.time()
+            t4 = time.perf_counter()
 
             # optimiser step (once per global step)
             # unscale gradients before clipping 
@@ -423,10 +432,10 @@ def train(config: ExperimentConfig) -> None:
 
             if device.type == "cuda":
                 torch.cuda.synchronize()
-            t5 = time.time()
+            t5 = time.perf_counter()
             dt_optim = t5 - t4
 
-            step_time = time.time() - step_start
+            step_time = time.perf_counter() - step_start
 
             # ── Logging ──────────────────────────────────────────────
             if global_step % config.log_interval == 0 and global_step>0:

@@ -28,7 +28,7 @@ def train_tokenizer(tokenizer_path: Path, max_books: int = None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Prepare Tokenizer and dataset.")
     parser.add_argument("--max_books", type=int, default=None, help="Max number of books (leave empty for all)")
-    parser.add_argument("--chunk_size", type=int, default=1000, help="Number of documents to tokenize in one batch (controls memory usage)")
+    parser.add_argument("--chunk_size", type=int, default=100, help="Number of documents to tokenize in one batch (controls memory usage)")
     args = parser.parse_args()
 
     tokenizer_path = Path("data/pretrain/tokenizer.json")
